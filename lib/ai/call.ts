@@ -13,6 +13,8 @@ import { costUsd } from "@/lib/ai/pricing";
 // Every model call in the app goes through this file, so each one is logged
 // with its tokens, cost and how long it took. The log goes to the terminal
 // running the app, as a line starting "[ai_calls]".
+// Module 5: with the Langfuse keys set, each call is also traced in Langfuse
+// (lib/ai/tracing.ts), named after its feature.
 
 export class AiNotConfiguredError extends Error {
   constructor() {
@@ -95,6 +97,20 @@ function rowFor(info: CallInfo, model: ModelId, started: number) {
   };
 }
 
+/**
+ * Names the call in Langfuse after its feature, and adds the module and
+ * feature to the trace. Ignored when tracing is off.
+ */
+function traceOptions(info: Omit<CallInfo, "model">) {
+  return {
+    runtimeContext: { module: info.module, feature: info.feature },
+    telemetry: {
+      functionId: info.feature,
+      includeRuntimeContext: { module: true, feature: true },
+    },
+  } as const;
+}
+
 async function tracked<T extends { usage: Usage }>(
   info: CallInfo,
   run: (model: ModelId) => Promise<T>,
@@ -114,7 +130,11 @@ async function tracked<T extends { usage: Usage }>(
 /** Generates text. Example: callText({ module: 3, feature: "support-answer" }, { prompt }) */
 export async function callText(info: CallInfo, options: TextOptions) {
   return tracked(info, (model) =>
-    generateText({ ...options, model: languageModel(model) }),
+    generateText({
+      ...traceOptions(info),
+      ...options,
+      model: languageModel(model),
+    }),
   );
 }
 
@@ -126,6 +146,7 @@ export async function callObject<Schema extends z.ZodType>(
   const { schema, ...rest } = options;
   const result = await tracked(info, (model) =>
     generateText({
+      ...traceOptions(info),
       ...rest,
       model: languageModel(model),
       output: Output.object({ schema }),
@@ -160,6 +181,7 @@ export async function callEmbedMany(
     });
   try {
     const result = await embedMany({
+      ...traceOptions(info),
       model: google().embedding(EMBEDDING_MODEL.slice("google/".length)),
       values,
       providerOptions: {
@@ -188,6 +210,7 @@ export function callStream(info: CallInfo, options: StreamOptions) {
   const model = info.model ?? defaultModel();
   const row = rowFor(info, model, performance.now());
   return streamText({
+    ...traceOptions(info),
     ...options,
     model: languageModel(model),
     onFinish: ({ totalUsage }) => logCall(row(true, totalUsage)),

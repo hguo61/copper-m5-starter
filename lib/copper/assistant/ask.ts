@@ -9,9 +9,12 @@
 // talking. Copper can hand the conversation to the Refund agent, a second
 // agent with its own instructions and tools, and the Refund agent can hand it
 // back. The agent that ends the turn answers the next message too.
+// Module 5: one question is one trace in Langfuse (lib/ai/tracing.ts), with
+// each agent's call, steps and tool calls inside it.
 import { hasToolCall, stepCountIs } from "ai";
 import { callStream, THOUGHT_SUMMARIES } from "@/lib/ai/call";
 import { createLive, type Live } from "@/lib/ai/live";
+import { flushTracing, traced } from "@/lib/ai/tracing";
 import {
   COPPER_HANDOFF,
   COPPER_INSTRUCTIONS,
@@ -190,8 +193,8 @@ export async function askCopper({
     return handoff;
   }
 
-  // Read the stream in the background, so the panel gets the first update now.
-  void (async () => {
+  /** Runs the turn: the first agent, and any handoffs after it. */
+  async function answer(): Promise<void> {
     try {
       if (!useTools) {
         // Without tools, send no instructions either: "always use your
@@ -224,7 +227,34 @@ export async function askCopper({
       progress.status = "error";
       if (!progress.reply.trim()) progress.reply = SORRY;
     }
+  }
+
+  // Read the stream in the background, so the panel gets the first update now.
+  void (async () => {
+    let answered = false;
+    await traced(
+      {
+        name: desk ? "support-chat" : "ask-copper",
+        input: messages.at(-1)?.content,
+        tags: [useTools ? "tools-on" : "tools-off"],
+        metadata: { first_agent: first },
+      },
+      async (setOutput) => {
+        answered = true;
+        await answer();
+        setOutput({
+          reply: progress.reply,
+          agent: progress.agent,
+          status: progress.status,
+        });
+      },
+    ).catch(() => {
+      // Tracing must never break the chat.
+    });
+    if (!answered) await answer();
     done(snapshot());
+    // Send the trace now, rather than waiting for the next batch.
+    await flushTracing();
   })();
 
   return { progress: live };
