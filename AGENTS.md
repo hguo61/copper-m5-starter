@@ -10,6 +10,8 @@ Module 5 makes Ask Copper safe to ship:
 - Trace every AI call in Langfuse (observability): each agent, its tool calls, tokens, cost and time.
 - Evaluate Ask Copper on a golden set of questions with an AI judge, and keep the scores in Langfuse.
 - Compare one support agent that does everything with the two agents (Copper and the Refund agent): run the same golden set on both and compare them in Langfuse.
+The AI judge that scores live Ask Copper replies is Langfuse's own LLM-as-a-judge: `lib/copper/judge.ts` describes it and `npm run judge:setup` sets it up in the student's Langfuse project. It runs inside Langfuse, on the Google AI key stored there as an LLM connection.
+The golden set is `evals/golden-set.json`, kept in Langfuse as the dataset `ask-copper-golden` (`npm run golden:upload`). `npm run golden:run` asks every question and grades each reply with the judge in `lib/copper/experiment.ts`.
 Use Langfuse for evals, tracing and monitoring. Don't add other eval or monitoring tools. The Langfuse keys are `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `LANGFUSE_BASE_URL` in `.env.local`. The AI judge uses Gemini through `lib/ai/call.ts`, like every other AI call.
 How the app fits together is in `docs/architecture.md`; add a section there when a module adds pages, tables or AI calls.
 

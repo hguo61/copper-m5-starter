@@ -171,3 +171,153 @@ the tests and a golden-set evaluation with an AI judge run in GitHub Actions
 on every pull request, with `main` protected; every AI call is traced in
 Langfuse; and one support agent that does everything is compared with the two
 agents on the same golden set. Langfuse is the only eval and monitoring tool.
+
+## Module 5: Langfuse tracing (observability)
+
+**Summary:** With the Langfuse keys set, every AI call is traced in Langfuse:
+which agent ran, each step, each tool call, the tokens, the cost and how long
+it took. One question to Ask Copper is one trace. Without the keys nothing is
+traced and the app works as before.
+
+**New pages:** none. The traces are in Langfuse, under Tracing.
+
+**New code:**
+
+- `instrumentation.ts`: Next.js runs it once when the server starts; it starts
+  tracing.
+- `lib/ai/tracing.ts`: `startTracing` (sets up Langfuse), `traced` (groups the
+  calls of one turn into one trace), `flushTracing` (sends what's waiting) and
+  `CostProcessor` (adds the cost to each model call).
+- `lib/ai/call.ts`: names each call after its feature (`ask-copper`,
+  `refund-agent`) and adds the module and feature to the trace.
+- `lib/copper/assistant/ask.ts`: wraps a turn in `traced`, with the question
+  as the input and the reply as the output.
+
+**New AI calls:** none.
+
+**What a trace looks like:** `ask-copper` (home page) or `support-chat`
+(Support page) → one agent per `callStream` (`ask-copper`, then
+`refund-agent` after a handoff) → its steps → the model call (tokens, cost,
+time) and the tool calls (what was sent, what came back). Traces are tagged
+`tools-on` or `tools-off`.
+
+**Data flow:** the AI SDK reports each call, step and tool call →
+`@langfuse/vercel-ai-sdk` turns them into spans → `CostProcessor` adds the
+cost → `LangfuseSpanProcessor` sends them to Langfuse.
+
+**Decisions and trade-offs:** Cost comes from this app's price table
+(`lib/ai/pricing.ts`), so Langfuse and the `[ai_calls]` log always agree, even
+for a model Langfuse has no price for; the cost of a new model has to be added
+there. Only the model call is priced, not the step or agent around it, so
+nothing is counted twice. The tracing setup is kept apart from Next.js's own
+request spans, so Langfuse holds AI calls only. Questions, replies and tool
+results are sent to Langfuse as they are.
+
+**Risks and open questions:** Anything a customer types ends up in Langfuse;
+a real app would mask personal data first. There is no session id yet, so the
+messages of one conversation are separate traces.
+
+## Module 5: AI judge (Langfuse LLM-as-a-judge)
+
+**Summary:** Langfuse's own LLM-as-a-judge reads every Ask Copper reply as it
+is traced and gives it a score from 0 to 1 with a one-line reason. The judge
+runs inside Langfuse, not in this app; the app only describes it and sets it
+up once with `npm run judge:setup`.
+
+**New pages:** none. The scores are in Langfuse, on each trace and under
+Scores. `npm run judge:scores` prints the latest ones.
+
+**New code:**
+
+- `lib/copper/judge.ts`: the judge's instructions (`JUDGE_PROMPT`), its score
+  (`JUDGE_SCORE`), which traces it reads (`JUDGE_FILTER`) and `setupJudge`,
+  which creates what's missing in Langfuse.
+- `scripts/judge.mjs`: the `judge:setup` and `judge:scores` commands.
+
+**What is set up in Langfuse:** an LLM connection (a Google AI key, so
+Langfuse can call Gemini), an evaluator named `ask-copper-answer-quality`, and
+an evaluation rule that runs it on the top record of every `ask-copper` and
+`support-chat` trace.
+
+**New AI calls:** one judge call per Ask Copper turn, made by Langfuse with
+the key stored there (`gemini-3.5-flash-lite`). They don't go through
+`lib/ai/call.ts` and don't appear in the `[ai_calls]` log.
+
+**Data flow:** a turn is traced → Langfuse matches it to the rule → fills
+`{{question}}` with the trace's input and `{{answer}}` with its reply → asks
+Gemini → saves the score and the reason on the trace.
+
+**Decisions and trade-offs:** Langfuse runs the judge, so every reply is
+scored with no code in the request path and nothing slows the chat; the cost
+is that Langfuse holds a copy of the Google AI key and the judge's calls use
+that key's quota. The judge sees only the question and the reply, not the
+documents or tool results, so it scores how well the reply answers, not
+whether its facts are right.
+
+**Risks and open questions:** Checking facts needs a golden set with expected
+answers. A judge is a model too: read its reasons before trusting a score.
+
+## Module 5: Golden set (Langfuse dataset)
+
+**Summary:** A fixed list of test questions for Ask Copper, each with what a
+good answer looks like. It lives in `evals/golden-set.json` and is kept in
+Langfuse as the dataset `ask-copper-golden` (`npm run golden:upload`).
+
+**New code:** `evals/golden-set.json` (the questions),
+`lib/copper/golden-set.ts` (`uploadGoldenSet`), and the `golden` command in
+`scripts/judge.mjs`.
+
+**What a question holds:** the customer's message, the page it's asked on
+(home or Support), a category (pricing, products, stock, policy,
+troubleshooting, refund, safety) and the expected answer in plain English.
+
+**Decisions and trade-offs:** The file in the repo is the source; Langfuse
+holds a copy, so a change to the questions goes through a pull request.
+Expected answers describe what the reply must say and do rather than exact
+wording, so a judge can compare them with a real reply. They repeat facts
+from the catalog, the orders and the documents, so they must be updated when
+those change.
+
+**Risks and open questions:** The expected answers are only as good as the
+person who wrote them; review them like code.
+
+## Module 5: Golden-set experiment and its judge
+
+**Summary:** `npm run golden:run` asks Ask Copper every question in the
+golden set, then an AI judge compares each reply with the expected answer and
+scores it from 0 to 1 with a reason. Each run is kept in Langfuse under
+Datasets > `ask-copper-golden`, so two runs can be compared side by side.
+
+**New code:**
+
+- `lib/copper/experiment.ts`: `answerGoldenQuestion` (asks through the real
+  `askCopper`, as a new conversation), `judgeGoldenAnswer` (the judge) and
+  `runGoldenExperiment` (runs the whole set with Langfuse's experiment
+  runner).
+- `scripts/golden-run.mjs`: the `golden:run` command. `--label` names the
+  run; `--min-average 0.8` makes it fail when the average is lower.
+
+**New AI calls:** `golden-set-judge` (module 5), one per question, through
+`callObject` in `lib/ai/call.ts`.
+
+**Scores in Langfuse:** `golden-set-judge` on each question's trace, with the
+judge's reason, and `golden-set-judge-average` on the run.
+
+**Data flow:** dataset item → `askCopper` (traced like any chat turn: agents,
+steps, tool calls, cost, time) → the reply, tool calls and handoffs → the
+judge, with the expected answer → score and reason → Langfuse.
+
+**Two judges, two jobs:** this judge runs in the app and knows the expected
+answer and which tools ran, so it can check facts and behavior on the test
+questions. The Langfuse judge (`lib/copper/judge.ts`) runs inside Langfuse on
+real conversations, where there is no expected answer.
+
+**Decisions and trade-offs:** The judge sees the tool calls and handoffs, not
+only the reply, so "uses calculate_cost" and "must not refund" can be
+checked. Questions run one at a time to stay inside a free key's rate limit,
+so a run takes a minute or two. Support-page questions start from a fresh
+Refund Console with the default limit.
+
+**Risks and open questions:** The judge and Ask Copper are the same model, so
+they may share blind spots. Scores can differ a little from run to run. The
+experiment isn't run in GitHub Actions yet.

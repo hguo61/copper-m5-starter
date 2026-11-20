@@ -47,6 +47,10 @@ They're optional until a module needs them. Put them in `.env.local` (never comm
 | `npm run start-module`               | One-time setup after cloning a module branch          |
 | `npm run env:check`                  | List the variables in `.env.local`, values masked     |
 | `npm run embed-docs`                 | Re-embed the PDFs in `public/docs/` after they change |
+| `npm run judge:setup`                | Set up the AI judge in your Langfuse project (once)   |
+| `npm run judge:scores`               | Print the judge's latest scores and reasons           |
+| `npm run golden:upload`              | Put the golden set of test questions in Langfuse      |
+| `npm run golden:run`                 | Ask every golden question and have the judge grade it |
 
 ## AI coding agents
 
